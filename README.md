@@ -27,6 +27,7 @@ docker compose down
 | 状态管理 | Zustand |
 | 路由 | React Router v6（BrowserRouter） |
 | 地图 | 高德地图 JS API 2.0（可选，key 缺失时自动退化） |
+| 坐标系 | 入库统一 **WGS-84**；高德/腾讯点位按 **GCJ-02** 导入并自动转换（固定点迭代反解） |
 | 本地存储 | IndexedDB（Dexie 4），缩略图单独建表，含结构版本号与升级迁移 |
 
 ## VITE_AMAP_KEY 配置与退化行为（重要）
@@ -97,8 +98,12 @@ sologsb-1123/
 
 ## 数据存储说明
 
-- 数据库名 `gbdronemap`，当前结构版本 **v2**（`localStorage['gbdronemap:db-version']` 记录）。
+- 数据库名 `gbdronemap`，当前结构版本 **v3**（`localStorage['gbdronemap:db-version']` 记录）。
 - 六张表：`missions`（任务）、`waypoints`（航点）、`lines`（航线参数）、`assets`（成果影像条目）、`thumbs`（**缩略图单独建表**，dataUrl）、`presets`（相机预设）。
 - v1 → v2 迁移：为老任务补 `areaPolygon`/传感器默认值，为航线补 `updatedAt`/`batteryCount`，并新增索引。
+- v2 → v3 迁移：航点新增 `coordSystem`（来源坐标系 `WGS84`/`GCJ02`）、`sourceLng`/`sourceLat`（原始坐标）；`lng`/`lat` 语义明确为**统一存储的 WGS-84**，航线折线、视场、航程计算只消费这两个字段。高德 JS API 分支绘制前把 WGS-84 转回 GCJ-02 以贴合底图，拾点回调带回 `GCJ02` 标记由页面转换后入库；本地 SVG 网格视图直接使用 WGS-84，拾点带回 `WGS84`。
+  - **粘贴导入**：先选来源坐标系（高德点位选 GCJ-02，无人机导出选 WGS-84），逐行解析并按来源转换；任一行无法解析、经纬度越界、转换后非法或**转换后超出测区多边形**时整批拒绝写入，并在错误提示里给出具体行号（相邻行合并为区间）。
+  - **老数据兼容**：未标 `coordSystem` 的航点打开时按 WGS-84 解读（页面顶部黄色提示条标注数量）；在表格内编辑任一字段保存时自动补上 `WGS84`，也可用提示条上的「一键补标为 WGS-84」批量补来源后重新保存。
+  - GCJ-02 → WGS-84 采用固定点迭代（4 次，往返误差 < 1 mm），中国以外不做加密偏移、按恒等处理。
 - 容器无状态、不挂载命名卷；清空站点数据即回到初始示范数据。
 - 首次打开灌入 2 个示范任务、5 个航点、2 条航线参数、6 条成果影像条目（含缩略图）与 3 套相机预设。

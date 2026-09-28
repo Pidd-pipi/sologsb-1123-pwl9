@@ -6,7 +6,7 @@ import { makeThumbDataUrl, type AssetThumb, type ImageAsset } from '../types/ima
 import { newId } from './id';
 
 export const DB_NAME = 'gbdronemap';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbdronemap:db-version';
 
 class DroneMapDB extends Dexie {
@@ -55,6 +55,17 @@ class DroneMapDB extends Dexie {
             if (row.batteryCount === undefined) row.batteryCount = 1;
           });
       });
+    // v3：航点增加「来源坐标系 + 原始坐标」字段，lng/lat 语义明确为统一存储的 WGS-84。
+    // 老航点没有 coordSystem，按需求不做一次性回填——打开时一律按 WGS-84 解读，
+    // 用户在航点页重新编辑保存后再逐行补齐（见 waypointStore.backfillCoordSystem）。
+    this.version(3).stores({
+      missions: 'id, missionNo, areaName, droneModel, flightDate, status, purpose, createdAt',
+      waypoints: 'id, missionId, seq, action, altitude',
+      lines: 'id, missionId, lineNo, updatedAt',
+      assets: 'id, missionId, imageNo, quality, shotAt',
+      thumbs: 'id, missionId',
+      presets: 'id, name, cameraModel',
+    });
   }
 }
 
@@ -178,6 +189,9 @@ export async function ensureSeedData(): Promise<void> {
       seq: index + 1,
       lng,
       lat,
+      coordSystem: 'WGS84',
+      sourceLng: lng,
+      sourceLat: lat,
       altitude: 120,
       speed: 8,
       heading: 90,
@@ -192,6 +206,9 @@ export async function ensureSeedData(): Promise<void> {
     seq: 1,
     lng: 121.4726,
     lat: 31.2321,
+    coordSystem: 'WGS84',
+    sourceLng: 121.4726,
+    sourceLat: 31.2321,
     altitude: 150,
     speed: 10,
     heading: 45,

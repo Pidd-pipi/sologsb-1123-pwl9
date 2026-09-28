@@ -8,8 +8,9 @@ import AmapRouteView from '../components/common/AmapRouteView';
 import OverlapCalcPanel from '../components/common/OverlapCalcPanel';
 import { loadFlightLine, saveFlightLine, splitSorties } from '../utils/db';
 import { newId } from '../utils/id';
+import { toWgs84 } from '../utils/coordTransform';
 import type { FlightLine } from '../types/flightline';
-import type { Waypoint } from '../types/waypoint';
+import type { CoordSystem, Waypoint } from '../types/waypoint';
 
 type LineRow = { key: string; label: string; value: string };
 
@@ -77,18 +78,22 @@ export default function RoutePlanner() {
     setSavedText(`已保存 ${new Date(line.updatedAt).toLocaleString('zh-CN')}`);
   };
 
-  const pickPoint = async (lng: number, lat: number) => {
+  const pickPoint = async (rawLng: number, rawLat: number, crs: CoordSystem) => {
     if (!mission) return;
     if (missionWaypoints.length >= 60) {
       setError('单任务航点上限为 60 个，请拆分架次');
       return;
     }
+    const [lng, lat] = toWgs84(rawLng, rawLat, crs);
     const seq = missionWaypoints.length === 0 ? 1 : Math.max(...missionWaypoints.map((w) => w.seq)) + 1;
     await addWaypoint({
       missionId: mission.id,
       seq,
       lng: Number(lng.toFixed(6)),
       lat: Number(lat.toFixed(6)),
+      coordSystem: crs,
+      sourceLng: Number(rawLng.toFixed(6)),
+      sourceLat: Number(rawLat.toFixed(6)),
       altitude: params.altitude,
       speed: params.speed,
       heading: params.heading,

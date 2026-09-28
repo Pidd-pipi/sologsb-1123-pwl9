@@ -63,6 +63,20 @@ export function polygonCentroid(polygon: LngLat[]): LngLat {
   return [sumLng / polygon.length, sumLat / polygon.length];
 }
 
+/** 点是否在多边形内（射线法，含边界；多边形少于 3 个点时不做限制） */
+export function pointInPolygon(point: LngLat, polygon: LngLat[]): boolean {
+  if (polygon.length < 3) return true;
+  const [x, y] = point;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const [xi, yi] = polygon[i];
+    const [xj, yj] = polygon[j];
+    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
 /** 把经纬度等比投影到给定画布，返回 SVG 坐标 */
 export interface Projector {
   toXY: (p: LngLat) => { x: number; y: number };

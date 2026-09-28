@@ -1,7 +1,18 @@
 import { create } from 'zustand';
 import { db } from '../utils/db';
 import { newId } from '../utils/id';
-import type { Waypoint, WaypointDraft } from '../types/waypoint';
+import type { CoordSystem, Waypoint, WaypointDraft } from '../types/waypoint';
+
+/** 入库归一：未标来源的航点按 WGS-84 处理，并保证原始坐标字段有值 */
+function normalizeDraft(draft: WaypointDraft): WaypointDraft {
+  const coordSystem: CoordSystem = draft.coordSystem ?? 'WGS84';
+  return {
+    ...draft,
+    coordSystem,
+    sourceLng: draft.sourceLng ?? draft.lng,
+    sourceLat: draft.sourceLat ?? draft.lat,
+  };
+}
 
 interface WaypointState {
   items: Waypoint[];
@@ -10,6 +21,8 @@ interface WaypointState {
   add: (draft: WaypointDraft) => Promise<Waypoint>;
   addMany: (drafts: WaypointDraft[]) => Promise<Waypoint[]>;
   update: (id: string, patch: Partial<Waypoint>) => Promise<void>;
+  /** 把任务内没标来源的老航点统一补成 WGS-84（重新保存补来源） */
+  backfillCoordSystem: (missionId: string, coordSystem?: CoordSystem) => Promise<number>;
   move: (id: string, direction: 'up' | 'down') => Promise<void>;
   reorder: (fromId: string, toId: string) => Promise<void>;
   removeByMission: (missionId: string) => Promise<void>;
@@ -26,20 +39,41 @@ export const useWaypointStore = create<WaypointState>((set, get) => ({
     set({ items: rows, loaded: true });
   },
   async add(draft) {
-    const record: Waypoint = { ...draft, id: newId('wp') };
+    const record: Waypoint = { ...normalizeDraft(draft), id: newId('wp') };
     await db.waypoints.put(record);
     set({ items: [...get().items, record] });
     return record;
   },
   async addMany(drafts) {
-    const records: Waypoint[] = drafts.map((d) => ({ ...d, id: newId('wp') }));
+    const records: Waypoint[] = drafts.map((d) => ({ ...normalizeDraft(d), id: newId('wp') }));
     await db.waypoints.bulkPut(records);
     set({ items: [...get().items, ...records] });
     return records;
   },
   async update(id, patch) {
-    await db.waypoints.update(id, patch);
-    set({ items: get().items.map((it) => (it.id === id ? { ...it, ...patch } : it)) });
+    const current = get().items.find((it) => it.id === id);
+    // 老数据在页面上重新编辑保存时，顺手补上来源（默认 WGS-84）
+    const nextPatch = current && !current.coordSystem ? { coordSystem: 'WGS84' as const, ...patch } : patch;
+    await db.waypoints.update(id, nextPatch);
+    set({ items: get().items.map((it) => (it.id === id ? { ...it, ...nextPatch } : it)) });
+  },
+  async backfillCoordSystem(missionId, coordSystem = 'WGS84') {
+    const targets = get().items.filter((it) => it.missionId === missionId && !it.coordSystem);
+    if (targets.length === 0) return 0;
+    const ids = new Set(targets.map((t) => t.id));
+    await db.waypoints.where('id').anyOf([...ids]).modify((w: Waypoint) => {
+      w.coordSystem = coordSystem;
+      if (w.sourceLng === undefined) w.sourceLng = w.lng;
+      if (w.sourceLat === undefined) w.sourceLat = w.lat;
+    });
+    set({
+      items: get().items.map((it) =>
+        ids.has(it.id)
+          ? { ...it, coordSystem, sourceLng: it.sourceLng ?? it.lng, sourceLat: it.sourceLat ?? it.lat }
+          : it,
+      ),
+    });
+    return targets.length;
   },
   /** 与相邻航点交换序号 */
   async move(id, direction) {

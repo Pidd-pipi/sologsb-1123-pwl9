@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Space, Tag, Typography } from 'antd';
 import type { LngLat, Mission } from '../../types/mission';
-import type { Waypoint } from '../../types/waypoint';
+import type { CoordSystem, Waypoint } from '../../types/waypoint';
 import { createProjector, distanceMeters, groundCoverage } from '../../utils/geoCalc';
+import { wgs84ToGcj02 } from '../../utils/coordTransform';
 import { loadAmap, readAmapKey, type AMapNamespace } from '../../utils/amapLoader';
 
 export interface AmapRouteViewProps {
@@ -12,8 +13,11 @@ export interface AmapRouteViewProps {
   altitude: number;
   /** 画布高度 px */
   height?: number;
-  /** 点击网格新增航点时回调（仅 SVG 视图支持） */
-  onPickPoint?: (lng: number, lat: number) => void;
+  /**
+   * 点击网格/地图新增航点时回调。
+   * 高德地图分支拾取回 GCJ-02，本地 SVG 网格分支拾取回 WGS-84，由调用方按 crs 决定是否转换。
+   */
+  onPickPoint?: (lng: number, lat: number, crs: CoordSystem) => void;
   /** 高亮的航点序号（例如从成果编目页「定位到图」） */
   highlightSeq?: number;
   /** 航点标注（用于单点视场预览） */
@@ -65,21 +69,22 @@ export default function AmapRouteView({
     };
   }, [keyPresent]);
 
-  // 高德地图分支：绘制多边形 / 折线 / 航点 / 视场矩形
+  // 高德地图分支：底图为 GCJ-02 瓦片，入库的 WGS-84 坐标绘制前统一转 GCJ-02
   useEffect(() => {
     if (mode !== 'amap' || !amap || !containerRef.current || !mission) return;
     const container = containerRef.current;
     const map = new amap.Map(container, {
       zoom: 15,
-      center: mission.areaPolygon[0] ?? [116.39, 39.9],
+      center: mission.areaPolygon[0] ? wgs84ToGcj02(mission.areaPolygon[0][0], mission.areaPolygon[0][1]) : [116.39, 39.9],
       mapStyle: 'amap://styles/normal',
     });
     mapRef.current = map;
     const overlays: unknown[] = [];
+    // 测区多边形（任务边界同样按 WGS-84 存储，绘制时转 GCJ-02）
     if (mission.areaPolygon.length >= 3) {
       overlays.push(
         new amap.Polygon({
-          path: mission.areaPolygon,
+          path: mission.areaPolygon.map((p) => wgs84ToGcj02(p[0], p[1])),
           strokeColor: '#1d3557',
           strokeWeight: 2,
           fillColor: '#8ecae6',
@@ -90,16 +95,17 @@ export default function AmapRouteView({
     if (waypoints.length >= 2) {
       overlays.push(
         new amap.Polyline({
-          path: waypoints.map((w) => [w.lng, w.lat]),
+          path: waypoints.map((w) => wgs84ToGcj02(w.lng, w.lat)),
           strokeColor: '#e07a2f',
           strokeWeight: 3,
         }),
       );
     }
     waypoints.forEach((w) => {
+      const [gLng, gLat] = wgs84ToGcj02(w.lng, w.lat);
       overlays.push(
         new amap.Marker({
-          position: [w.lng, w.lat],
+          position: [gLng, gLat],
           title: `#${w.seq} ${w.altitude} m ${w.action}`,
         }),
       );
@@ -107,12 +113,12 @@ export default function AmapRouteView({
         const side = groundCoverage(mission.sensorWidth, w.altitude, mission.focalLength);
         const along = groundCoverage(mission.sensorHeight, w.altitude, mission.focalLength);
         const dLat = side / 111320 / 2;
-        const dLng = along / (111320 * Math.cos((w.lat * Math.PI) / 180)) / 2;
+        const dLng = along / (111320 * Math.cos((gLat * Math.PI) / 180)) / 2;
         overlays.push(
           new amap.Rectangle({
             bounds: [
-              [w.lng - dLng, w.lat - dLat],
-              [w.lng + dLng, w.lat + dLat],
+              [gLng - dLng, gLat - dLat],
+              [gLng + dLng, gLat + dLat],
             ],
             strokeColor: '#e07a2f',
             strokeWeight: 1,
@@ -123,6 +129,13 @@ export default function AmapRouteView({
       }
     });
     overlays.forEach((o) => map.add(o));
+    // 高德地图拾取回的是 GCJ-02，回调里带上 crs，由页面转 WGS-84 后入库
+    const clickHandler = (e: { lnglat?: { getLng: () => number; getLat: () => number } }) => {
+      if (!onPickPoint || !e.lnglat) return;
+      onPickPoint(e.lnglat.getLng(), e.lnglat.getLat(), 'GCJ02');
+    };
+    const rawMap = map as unknown as { on?: (event: string, handler: (e: unknown) => void) => void };
+    rawMap.on?.('click', clickHandler as (e: unknown) => void);
     map.setFitView();
     return () => {
       try {
@@ -132,7 +145,7 @@ export default function AmapRouteView({
       }
       mapRef.current = null;
     };
-  }, [mode, amap, mission, waypoints, withFov]);
+  }, [mode, amap, mission, waypoints, withFov, onPickPoint]);
 
   // 本地 SVG 网格视图：等比投影，完全离线
   const projection = useMemo(() => {
@@ -191,7 +204,7 @@ export default function AmapRouteView({
           showIcon
           message="已启用高德地图 JS API（VITE_AMAP_KEY 已配置）"
         />
-        <div ref={containerRef} style={{ width: '100%', height, borderRadius: 6, overflow: 'hidden' }} data-testid="amap-container" />
+        <div ref={containerRef} style={{ width: '100%', height, borderRadius: 6, overflow: 'hidden', cursor: onPickPoint ? 'crosshair' : 'default' }} data-testid="amap-container" />
       </div>
     );
   }
@@ -218,7 +231,7 @@ export default function AmapRouteView({
           const x = ((e.clientX - rect.left) / rect.width) * GRID_W;
           const y = ((e.clientY - rect.top) / rect.height) * height;
           const [lng, lat] = projection.projector.toLngLat(x, y);
-          onPickPoint(lng, lat);
+          onPickPoint(lng, lat, 'WGS84');
         }}
       >
         <defs>
