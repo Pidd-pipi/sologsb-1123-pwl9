@@ -89,6 +89,10 @@ export default function RoutePlanner() {
       seq,
       lng: Number(lng.toFixed(6)),
       lat: Number(lat.toFixed(6)),
+      origLng: Number(lng.toFixed(6)),
+      origLat: Number(lat.toFixed(6)),
+      // 网格/地图按 WGS-84 绘制，点击拾取的点位即 WGS-84
+      source: 'WGS-84',
       altitude: params.altitude,
       speed: params.speed,
       heading: params.heading,
